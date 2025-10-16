@@ -8,8 +8,8 @@ readonly TIME_ZONE="UTC"
 readonly USERNAME="zabe"
 
 readonly BASE_DIR="/opt/zdac"
-readonly BACKEND_DIR="${BASE_DIR}/backend"
-readonly FRONTEND_DIR="${BASE_DIR}/frontend"
+readonly BACKEND_DIR="${BASE_DIR}/api"
+readonly FRONTEND_DIR="${BASE_DIR}/web"
 readonly WEB_DIR="/var/www/html/zdac"
 readonly NGINX_SITE="zdac"
 
@@ -272,17 +272,17 @@ PORT=${BACKEND_PORT}
 HOST=0.0.0.0
 NODE_ENV=production
 APP_KEY=${app_key:-$(openssl rand -base64 32)}
-DRIVE_DISK=local
-SESSION_DRIVER=cookie
 
-DB_CONNECTION=pg
-PG_HOST=localhost
-PG_PORT=5432
-PG_USER=${db_user}
-PG_PASSWORD=${db_pass}
-PG_DB_NAME=${db_name}
+TZ=UTC
+LOG_LEVEL=info
 
-REDIS_CONNECTION=local
+DB_CONNECTION=postgres
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=${db_user}
+DB_PASSWORD=${db_pass}
+DB_DATABASE=${db_name}
+
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 REDIS_PASSWORD=
