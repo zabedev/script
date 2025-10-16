@@ -13,9 +13,9 @@ readonly FRONTEND_DIR="${BASE_DIR}/frontend"
 readonly WEB_DIR="/var/www/html/zdac"
 readonly NGINX_SITE="zdac"
 
-readonly GIT_BACKEND_REPO="https://github.com/zabedev/dac-backend.git"
+readonly GIT_BACKEND_REPO=""
 readonly GIT_BACKEND_BRANCH="main"
-readonly GIT_FRONTEND_REPO="https://github.com/zabedev/dac-frontend.git"
+readonly GIT_FRONTEND_REPO=""
 readonly GIT_FRONTEND_BRANCH="main"
 
 readonly BACKEND_PORT="3333"
@@ -323,16 +323,7 @@ build_backend() {
         export NVM_DIR=\"\$HOME/.nvm\"
         [ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\"
         cd ${BACKEND_DIR}
-        
-        # Limpa node_modules e cache
-        rm -rf node_modules package-lock.json
-        npm cache clean --force
-        
-        # Instala dependências de produção
-        npm ci --production --no-audit
-        
-        # Build do projeto AdonisJS
-        node ace build --production
+        npm install --production
     " || return 1
     
     dialog --title "Backend Build" --infobox "Executando migrations..." 5 50
@@ -340,8 +331,7 @@ build_backend() {
     su - "$USERNAME" -c "
         export NVM_DIR=\"\$HOME/.nvm\"
         [ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\"
-        cd ${BACKEND_DIR}/build
-        npm ci --production
+        cd ${BACKEND_DIR}
         node ace migration:run --force
     " || true
     
