@@ -9,17 +9,13 @@ readonly USERNAME="zabe"
 
 readonly BASE_DIR="/opt/zdac"
 readonly BACKEND_DIR="${BASE_DIR}/api"
-readonly FRONTEND_DIR="${BASE_DIR}/web"
 readonly WEB_DIR="/var/www/html/zdac"
 readonly NGINX_SITE="zdac"
 
-readonly GIT_BACKEND_REPO=""
-readonly GIT_BACKEND_BRANCH="main"
-readonly GIT_FRONTEND_REPO=""
-readonly GIT_FRONTEND_BRANCH="main"
+readonly GIT_RELEASE_URL="https://github.com/zabedev/script/raw/main/zdac.zip"
+readonly DOWNLOAD_DIR="/tmp/zdac-install"
 
 readonly BACKEND_PORT="3333"
-readonly FRONTEND_PORT="3000"
 
 readonly SYSTEMD_SERVICE_DIR="/etc/systemd/system"
 readonly SYSTEMD_SERVICES=("zdac-api")
@@ -28,7 +24,6 @@ readonly ZDAC_DIRS=(
     "${BASE_DIR}"
     "${BASE_DIR}/logs"
     "${BACKEND_DIR}"
-    "${FRONTEND_DIR}"
     "${WEB_DIR}"
 )
 
@@ -105,25 +100,6 @@ remove_nopasswd() {
         rm -f /etc/sudoers.d/zdac-installer
         log "INFO" "NOPASSWD permission removed"
     fi
-}
-
-prompt_git_repos() {
-    local backend_repo frontend_repo
-    
-    backend_repo=$(dialog --title "Repositório Backend" \
-        --inputbox "URL do repositório Git do backend (AdonisJS):" 10 70 \
-        "${GIT_BACKEND_REPO}" 2>&1 >/dev/tty)
-    
-    frontend_repo=$(dialog --title "Repositório Frontend" \
-        --inputbox "URL do repositório Git do frontend (Vue.js):" 10 70 \
-        "${GIT_FRONTEND_REPO}" 2>&1 >/dev/tty)
-    
-    if [[ -z "$backend_repo" ]] || [[ -z "$frontend_repo" ]]; then
-        dialog --title "Erro" --msgbox "Ambos os repositórios são obrigatórios!" 7 50
-        return 1
-    fi
-    
-    echo "$backend_repo|$frontend_repo"
 }
 
 update_system() {
@@ -218,41 +194,56 @@ create_zdac_dirs() {
     
     for dir in "${ZDAC_DIRS[@]}"; do
         mkdir -p "$dir"
-        chown -R "${USERNAME}:${USERNAME}" "$dir"
     done
+    
+    chown -R "${USERNAME}:${USERNAME}" "${BASE_DIR}"
+    chown -R www-data:www-data "${WEB_DIR}"
     
     log "INFO" "Directories created"
 }
 
-clone_repositories() {
-    local repos="$1"
-    local backend_repo frontend_repo
+download_and_extract_zdac() {
+    log "INFO" "Downloading ZDAC package"
     
-    IFS='|' read -r backend_repo frontend_repo <<< "$repos"
+    mkdir -p "$DOWNLOAD_DIR"
     
-    log "INFO" "Cloning repositories"
+    dialog --title "Download" --infobox "Baixando pacote ZDAC do GitHub..." 5 60
     
-    dialog --title "Git Clone" --infobox "Clonando backend repository..." 5 60
-    
-    if [[ -d "${BACKEND_DIR}/.git" ]]; then
-        su - "$USERNAME" -c "cd ${BACKEND_DIR} && git pull origin ${GIT_BACKEND_BRANCH}"
-    else
-        rm -rf "${BACKEND_DIR:?}"/*
-        su - "$USERNAME" -c "git clone -b ${GIT_BACKEND_BRANCH} ${backend_repo} ${BACKEND_DIR}"
+    if ! wget -q --show-progress -O "${DOWNLOAD_DIR}/zdac.zip" "$GIT_RELEASE_URL" 2>&1 | \
+        dialog --title "Download" --programbox "Progresso do download:" 10 70; then
+        log "ERROR" "Failed to download ZDAC package"
+        dialog --title "Erro" --msgbox "Falha ao baixar o pacote ZDAC.\nVerifique sua conexão e a URL." 8 50
+        return 1
     fi
     
-    dialog --title "Git Clone" --infobox "Clonando frontend repository..." 5 60
+    dialog --title "Extração" --infobox "Extraindo arquivos..." 5 50
     
-    if [[ -d "${FRONTEND_DIR}/.git" ]]; then
-        su - "$USERNAME" -c "cd ${FRONTEND_DIR} && git pull origin ${GIT_FRONTEND_BRANCH}"
-    else
-        rm -rf "${FRONTEND_DIR:?}"/*
-        su - "$USERNAME" -c "git clone -b ${GIT_FRONTEND_BRANCH} ${frontend_repo} ${FRONTEND_DIR}"
+    unzip -q -o "${DOWNLOAD_DIR}/zdac.zip" -d "$DOWNLOAD_DIR" || {
+        log "ERROR" "Failed to extract ZDAC package"
+        dialog --title "Erro" --msgbox "Falha ao extrair o pacote ZDAC." 7 50
+        return 1
+    }
+    
+    if [[ ! -d "${DOWNLOAD_DIR}/api" ]] || [[ ! -d "${DOWNLOAD_DIR}/web" ]]; then
+        log "ERROR" "Invalid package structure. Expected 'api' and 'web' directories"
+        dialog --title "Erro" --msgbox "Estrutura do pacote inválida.\nEsperado: api/ e web/" 8 50
+        return 1
     fi
     
-    chown -R "${USERNAME}:${USERNAME}" "${BASE_DIR}"
+    dialog --title "Instalação" --infobox "Copiando backend para ${BACKEND_DIR}..." 5 60
+    rm -rf "${BACKEND_DIR:?}"/*
+    cp -r "${DOWNLOAD_DIR}/api/"* "${BACKEND_DIR}/"
     
-    log "INFO" "Repositories cloned successfully"
+    dialog --title "Instalação" --infobox "Copiando frontend para ${WEB_DIR}..." 5 60
+    rm -rf "${WEB_DIR:?}"/*
+    cp -r "${DOWNLOAD_DIR}/web/"* "${WEB_DIR}/"
+    
+    chown -R "${USERNAME}:${USERNAME}" "${BACKEND_DIR}"
+    chown -R www-data:www-data "${WEB_DIR}"
+    
+    rm -rf "$DOWNLOAD_DIR"
+    
+    log "INFO" "ZDAC package installed successfully"
 }
 
 configure_backend_env() {
@@ -273,7 +264,7 @@ HOST=0.0.0.0
 NODE_ENV=production
 APP_KEY=${app_key:-$(openssl rand -base64 32)}
 
-TZ=UTC
+TZ=${TIME_ZONE}
 LOG_LEVEL=info
 
 DB_CONNECTION=postgres
@@ -296,74 +287,63 @@ EOF
     log "INFO" "Backend .env configured"
 }
 
-configure_frontend_env() {
-    log "INFO" "Configuring frontend .env"
+install_backend_dependencies() {
+    log "INFO" "Installing backend dependencies"
     
-    local api_url
-    api_url=$(dialog --title "Frontend Config" \
-        --inputbox "URL da API (backend):" 8 60 \
-        "http://localhost:${BACKEND_PORT}" 2>&1 >/dev/tty)
-    
-    cat > "${FRONTEND_DIR}/.env" <<EOF
-VITE_API_URL=${api_url}
-VITE_APP_NAME=ZDAC Gateway
-EOF
-    
-    chown "${USERNAME}:${USERNAME}" "${FRONTEND_DIR}/.env"
-    
-    log "INFO" "Frontend .env configured"
-}
-
-build_backend() {
-    log "INFO" "Building backend"
-    
-    dialog --title "Backend Build" --infobox "Instalando dependências do backend..." 6 60
+    dialog --title "Backend Setup" --infobox "Instalando dependências de produção..." 5 60
     
     su - "$USERNAME" -c "
         export NVM_DIR=\"\$HOME/.nvm\"
         [ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\"
         cd ${BACKEND_DIR}
-        npm install --production
-    " || return 1
+        
+        if [[ -f package.json ]]; then
+            npm ci --omit=dev --no-audit 2>/dev/null || npm install --production
+        fi
+    " || {
+        log "ERROR" "Failed to install backend dependencies"
+        return 1
+    }
     
-    dialog --title "Backend Build" --infobox "Executando migrations..." 5 50
-    
-    su - "$USERNAME" -c "
-        export NVM_DIR=\"\$HOME/.nvm\"
-        [ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\"
-        cd ${BACKEND_DIR}
-        node ace migration:run --force
-    " || true
-    
-    log "INFO" "Backend built successfully"
+    log "INFO" "Backend dependencies installed"
 }
 
-build_frontend() {
-    log "INFO" "Building frontend"
+run_migrations() {
+    log "INFO" "Running database migrations"
     
-    dialog --title "Frontend Build" --infobox "Instalando dependências do frontend..." 6 60
+    dialog --title "Database" --infobox "Executando migrations..." 5 50
     
-    su - "$USERNAME" -c "
+    local migration_result
+    migration_result=$(su - "$USERNAME" -c "
         export NVM_DIR=\"\$HOME/.nvm\"
         [ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\"
-        cd ${FRONTEND_DIR}
-        npm install
-    " || return 1
+        
+        # Verifica se é projeto compilado (tem build/) ou dev (tem ace na raiz)
+        if [[ -d ${BACKEND_DIR}/build && -f ${BACKEND_DIR}/build/ace.js ]]; then
+            cd ${BACKEND_DIR}/build
+            node ace.js migration:run --force
+        elif [[ -f ${BACKEND_DIR}/ace ]]; then
+            cd ${BACKEND_DIR}
+            node ace migration:run --force
+        elif [[ -f ${BACKEND_DIR}/ace.js ]]; then
+            cd ${BACKEND_DIR}
+            node ace.js migration:run --force
+        else
+            echo 'NO_ACE_FOUND'
+            exit 1
+        fi
+    " 2>&1)
     
-    dialog --title "Frontend Build" --infobox "Compilando aplicação Vue..." 6 50
-    
-    su - "$USERNAME" -c "
-        export NVM_DIR=\"\$HOME/.nvm\"
-        [ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\"
-        cd ${FRONTEND_DIR}
-        npm run build
-    " || return 1
-    
-    rm -rf "${WEB_DIR:?}"/*
-    cp -r "${FRONTEND_DIR}/dist/"* "${WEB_DIR}/"
-    chown -R www-data:www-data "${WEB_DIR}"
-    
-    log "INFO" "Frontend built and deployed"
+    if [[ $? -ne 0 ]] || [[ "$migration_result" == *"NO_ACE_FOUND"* ]]; then
+        log "WARN" "Migrations failed or ace not found"
+        dialog --title "Aviso" --yesno "Migrations não puderam ser executadas automaticamente.\n\nDeseja continuar mesmo assim?" 9 60
+        
+        if [[ $? -ne 0 ]]; then
+            return 1
+        fi
+    else
+        log "INFO" "Migrations completed successfully"
+    fi
 }
 
 create_systemd_service() {
@@ -377,6 +357,31 @@ create_systemd_service() {
         which node
     ')
     
+    local working_dir exec_start
+    
+    # Detecta estrutura: compilado (build/server.js) ou dev (ace na raiz)
+    if [[ -f "${BACKEND_DIR}/build/server.js" ]]; then
+        working_dir="${BACKEND_DIR}/build"
+        exec_start="${node_path} server.js"
+        log "INFO" "Detected compiled AdonisJS project (build/server.js)"
+    elif [[ -f "${BACKEND_DIR}/server.js" ]]; then
+        working_dir="${BACKEND_DIR}"
+        exec_start="${node_path} server.js"
+        log "INFO" "Detected compiled project (server.js)"
+    elif [[ -f "${BACKEND_DIR}/ace" ]]; then
+        working_dir="${BACKEND_DIR}"
+        exec_start="${node_path} ace serve --watch=false"
+        log "INFO" "Detected development project (ace)"
+    elif [[ -f "${BACKEND_DIR}/ace.js" ]]; then
+        working_dir="${BACKEND_DIR}"
+        exec_start="${node_path} ace.js serve --watch=false"
+        log "INFO" "Detected project with ace.js"
+    else
+        log "ERROR" "No valid entry point found"
+        dialog --title "Erro" --msgbox "Nenhum ponto de entrada válido encontrado:\n- build/server.js\n- server.js\n- ace\n- ace.js" 10 60
+        return 1
+    fi
+    
     cat > "${SYSTEMD_SERVICE_DIR}/zdac-api.service" <<EOF
 [Unit]
 Description=ZDAC API Service (AdonisJS)
@@ -387,10 +392,10 @@ Wants=postgresql.service redis-server.service
 Type=simple
 User=${USERNAME}
 Group=${USERNAME}
-WorkingDirectory=${BACKEND_DIR}
+WorkingDirectory=${working_dir}
 Environment="NODE_ENV=production"
 Environment="PATH=${node_path%/node}:\$PATH"
-ExecStart=${node_path} ace serve --watch=false
+ExecStart=${exec_start}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -404,7 +409,7 @@ EOF
     systemctl enable zdac-api
     systemctl restart zdac-api
     
-    log "INFO" "Systemd service created and started"
+    log "INFO" "Systemd service created and started (${working_dir})"
 }
 
 configure_nginx() {
@@ -492,25 +497,29 @@ install_zdac() {
     check_root
     check_user_exists
     
-    local repos db_config
-    
-    repos=$(prompt_git_repos) || return 1
+    local db_config
     
     dialog --title "Instalação ZDAC" --infobox "Configurando timezone..." 5 50
     timedatectl set-timezone "$TIME_ZONE"
     
     change_nopasswd
     
-    db_config=$(configure_postgres) || return 1
+    db_config=$(configure_postgres) || {
+        remove_nopasswd
+        return 1
+    }
     
     create_zdac_dirs
-    clone_repositories "$repos"
+    
+    download_and_extract_zdac || {
+        remove_nopasswd
+        return 1
+    }
     
     configure_backend_env "$db_config"
-    configure_frontend_env
     
-    build_backend
-    build_frontend
+    install_backend_dependencies
+    run_migrations
     
     create_systemd_service
     configure_nginx
@@ -519,6 +528,9 @@ install_zdac() {
     
     log "INFO" "ZDAC installation completed"
     
+    local server_ip
+    server_ip=$(hostname -I | awk '{print $1}')
+    
     dialog --title "Instalação Concluída" --msgbox "\
 ZDAC instalado com sucesso!
 
@@ -526,8 +538,12 @@ Backend: ${BACKEND_DIR}
 Frontend: ${WEB_DIR}
 Logs: ${BASE_DIR}/logs
 
-Serviço: systemctl status zdac-api
-Nginx: systemctl status nginx" 14 60
+Comandos úteis:
+- Status: systemctl status zdac-api
+- Logs: journalctl -u zdac-api -f
+- Nginx: systemctl status nginx
+
+Acesse: http://${server_ip}" 18 60
 }
 
 uninstall_zdac() {
@@ -565,7 +581,11 @@ uninstall_zdac() {
         --yesno "Deseja remover o banco de dados PostgreSQL?" 7 50
     
     if [[ $? -eq 0 ]]; then
-        sudo -u postgres psql -c "DROP DATABASE IF EXISTS zdac;" 2>/dev/null || true
+        local db_name
+        db_name=$(dialog --title "Database Name" \
+            --inputbox "Nome do banco a remover:" 8 50 "zdac" 2>&1 >/dev/tty)
+        
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${db_name};" 2>/dev/null || true
         sudo -u postgres psql -c "DROP USER IF EXISTS ${USERNAME};" 2>/dev/null || true
     fi
     
@@ -586,7 +606,12 @@ system_reboot() {
 }
 
 show_logs() {
-    dialog --title "Logs do Sistema" --tailbox "$LOG_FILE" 20 70
+    if [[ ! -f "$LOG_FILE" ]]; then
+        dialog --title "Logs" --msgbox "Arquivo de log não encontrado" 7 40
+        return
+    fi
+    
+    dialog --title "Logs do Instalador" --tailbox "$LOG_FILE" 20 70
 }
 
 show_service_status() {
@@ -594,7 +619,7 @@ show_service_status() {
     
     status_output=$(systemctl status zdac-api 2>&1 || echo "Serviço não encontrado")
     
-    dialog --title "Status do Serviço" --msgbox "$status_output" 20 70
+    dialog --title "Status do Serviço ZDAC API" --msgbox "$status_output" 20 70
 }
 
 show_about() {
@@ -612,10 +637,14 @@ Stack:
 Diretórios:
 - Base: ${BASE_DIR}
 - Backend: ${BACKEND_DIR}
-- Frontend: ${FRONTEND_DIR}
-- Web: ${WEB_DIR}
+- Frontend: ${WEB_DIR}
 
-Log: ${LOG_FILE}" 20 60
+Estrutura esperada do zdac.zip:
+├── api/     (Backend compilado)
+└── web/     (Frontend compilado)
+
+Download: ${GIT_RELEASE_URL}
+Log: ${LOG_FILE}" 24 70
 }
 
 main_menu() {
