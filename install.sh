@@ -124,6 +124,8 @@ configure_postgres() {
 
     PGPATH=$(sudo -u postgres psql -t -P format=unaligned -c "SHOW hba_file;")
     sudo sed -i 's/peer/md5/g' "$PGPATH"
+
+    sudo systemctl restart postgresql
 }
 
 create_supervisor_config() {
