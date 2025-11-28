@@ -169,6 +169,9 @@ install_auxiliary_packages() {
 remove_auxiliary_packages() {
     log_info "Removing auxiliary packages..."
     
+    log_command "systemctl disable postgresql.service"
+    log_command "systemctl disable nginx.service"
+    log_command "systemctl stop nginx.service" 
     log_command "apt remove supervisor nginx postgresql -y"
     log_command "apt purge supervisor* nginx* postgresql* -y"
     log_command "apt autoremove -y"
@@ -373,7 +376,11 @@ cleanup_postgres() {
         sudo -u postgres psql -c "DROP USER IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}"
     fi
     
+    log_command "systemctl stop postgresql.service"
+    log_command "systemctl stop nginx.service"
+    
     log_success "PostgreSQL cleaned"
+
 }
 
 # ============================================================================
