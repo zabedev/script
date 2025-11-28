@@ -2,7 +2,7 @@
 
 USERNAME="zabe"
 USERNAME_DBPASS="7bb073796c8a93"
-ADMIN_PASSWORD="zabe"
+ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
 LANGUAGE_CODE="pt-BR"
 TIME_ZONE="UTC"
 SECRET_KEY="django-insecure-vpo7np+n_333j@2dy6$&8tibp*sll(x$*6_7a!3!uc^cibb*"
@@ -121,6 +121,9 @@ configure_postgres() {
     sudo -u postgres psql -c "CREATE USER ${username} WITH PASSWORD '${password}';" 
     sudo -u postgres psql -c "ALTER USER ${username} WITH SUPERUSER;" 
     sudo -u postgres psql -c "CREATE DATABASE ${username} OWNER ${username};" 
+
+    PGPATH=$(sudo -u postgres psql -t -P format=unaligned -c "SHOW hba_file;")
+    sudo sed -i 's/peer/md5/g' "$PGPATH"
 }
 
 create_supervisor_config() {
@@ -272,11 +275,6 @@ configure_services() {
 }
 
 create_zdac_dirs() {
-    #    create_dir "/opt/zdac"
-    #    create_dir "/opt/zdac/logs"
-    #    create_dir "/opt/zdac/logs/supervisor"
-    #    create_dir "/opt/zdac-update"
-    #    create_dir "/var/www/html"
     for dir in "${ZDAC_DIRS[@]}"; do
         create_dir "$dir"
     done
