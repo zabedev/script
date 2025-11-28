@@ -331,8 +331,7 @@ EOF"
     sudo chown "${USERNAME}":www-data "${BASE_DIR}"/api/gunicorn.sock
     sudo chmod 770 "${BASE_DIR}"/api/gunicorn.sock
 
-    configure_admin_user
-
+    
     sudo bash -c "printf '%s\n' 'server {
     listen 80;
     server_name _;
