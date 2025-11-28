@@ -6,7 +6,7 @@ set -euo pipefail
 # CONFIGURATION
 # ============================================================================
 
-readonly SCRIPT_VERSION="2.0.0"
+readonly SCRIPT_VERSION="2.0.1"
 readonly USERNAME="zabe"
 readonly USERNAME_DBPASS="7bb073796c8a93"
 readonly ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
@@ -142,11 +142,13 @@ update_system() {
     
     if ! log_command "apt update"; then
         log_error "Failed to update package lists"
+        read -p "Press Enter to continue..."
         return 1
     fi
     
     if ! log_command "apt upgrade -y"; then
         log_error "Failed to upgrade packages"
+        read -p "Press Enter to continue..."
         return 1
     fi
     
@@ -163,7 +165,6 @@ install_auxiliary_packages() {
     fi
     
     log_success "Auxiliary packages installed"
-    read -p "Press Enter to continue..."
 }
 
 remove_auxiliary_packages() {
@@ -178,7 +179,6 @@ remove_auxiliary_packages() {
     log_command "apt clean"
     
     log_success "Auxiliary packages removed"
-    read -p "Press Enter to continue..."
 }
 
 # ============================================================================
@@ -380,7 +380,6 @@ cleanup_postgres() {
     log_command "systemctl stop nginx.service"
     
     log_success "PostgreSQL cleaned"
-
 }
 
 # ============================================================================
@@ -683,18 +682,44 @@ install_zdac() {
     timedatectl set-timezone UTC
     remove_sudo_nopasswd
     configure_sudo_nopasswd
-    install_auxiliary_packages
-    configure_postgres
+    
+    if ! install_auxiliary_packages; then
+        log_error "Failed to install auxiliary packages"
+        read -p "Press Enter to return to menu..."
+        return 1
+    fi
+    
+    if ! configure_postgres; then
+        log_error "Failed to configure PostgreSQL"
+        read -p "Press Enter to return to menu..."
+        return 1
+    fi
+    
     create_all_directories
-    download_and_extract_files
+    
+    if ! download_and_extract_files; then
+        log_error "Failed to download application files"
+        read -p "Press Enter to return to menu..."
+        return 1
+    fi
     
     change_ownership "www-data" "www-data" "${WEB_DIR}"
     configure_user_groups
     
-    setup_python_environment
+    if ! setup_python_environment; then
+        log_error "Failed to setup Python environment"
+        read -p "Press Enter to return to menu..."
+        return 1
+    fi
+    
     change_ownership "${USERNAME}" "${USERNAME}" "${BASE_DIR}"
     create_env_file
-    run_django_migrations
+    
+    if ! run_django_migrations; then
+        log_error "Failed to run Django migrations"
+        read -p "Press Enter to return to menu..."
+        return 1
+    fi
     
     create_all_services
     start_services
@@ -702,7 +727,11 @@ install_zdac() {
     chown "${USERNAME}:www-data" "${BASE_DIR}/gunicorn.sock" 2>/dev/null || true
     chmod 770 "${BASE_DIR}/gunicorn.sock" 2>/dev/null || true
     
-    configure_nginx
+    if ! configure_nginx; then
+        log_error "Failed to configure Nginx"
+        read -p "Press Enter to return to menu..."
+        return 1
+    fi
     
     log_success "Zabe Gateway installed successfully!"
     log_info "Log file: ${LOG_FILE}"
