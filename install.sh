@@ -1,8 +1,8 @@
 #!/bin/bash
 
 USERNAME="zabe"
-USERNAME_DBPASS="7bb073796c8a9378f463ae8a"
-ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
+USERNAME_DBPASS="7bb073796c8a93"
+ADMIN_PASSWORD="zabe"
 LANGUAGE_CODE="pt-BR"
 TIME_ZONE="UTC"
 SECRET_KEY="django-insecure-vpo7np+n_333j@2dy6$&8tibp*sll(x$*6_7a!3!uc^cibb*"
@@ -18,7 +18,7 @@ SUPERVISOR_SERVICES=(
     "dac-reader"
 )
 SYSTEMD_SERVICES=(
-    "zdac-api"
+    "dac-api"
 )
 
 ZDAC_DIRS=(
@@ -249,7 +249,7 @@ remove_all_services() {
 }
 
 create_services() {
-    create_systemd_service "dac-api" "${BASE_DIR}/venv/bin/gunicorn --bind unix:${BASE_DIR}/api/gunicorn.sock api.wsgi:application" "${BASE_DIR}" "zabe" "www-data"
+    create_systemd_service "dac-api" "${BASE_DIR}/venv/bin/gunicorn --bind unix:${BASE_DIR}/gunicorn.sock backend.wsgi:application" "${BASE_DIR}" "zabe" "www-data"
     create_supervisor_config "dac-boot" "${BASE_DIR}/venv/bin/python ${BASE_DIR}/boot.py" "${BASE_DIR}" "PATH='${BASE_DIR}/venv/bin',VIRTUAL_ENV='${BASE_DIR}/venv'"
     create_supervisor_config "dac-sender" "${BASE_DIR}/venv/bin/python ${BASE_DIR}/sender.py" "${BASE_DIR}" "PATH='${BASE_DIR}/venv/bin',VIRTUAL_ENV='${BASE_DIR}/venv'"
     create_supervisor_config "dac-reader" "${BASE_DIR}/venv/bin/python ${BASE_DIR}/reader.py" "${BASE_DIR}" "PATH='${BASE_DIR}/venv/bin',VIRTUAL_ENV='${BASE_DIR}/venv'"
@@ -328,8 +328,8 @@ EOF"
 
     configure_services
 
-    sudo chown "${USERNAME}":www-data "${BASE_DIR}"/api/gunicorn.sock
-    sudo chmod 770 "${BASE_DIR}"/api/gunicorn.sock
+    sudo chown "${USERNAME}":www-data "${BASE_DIR}"/gunicorn.sock
+    sudo chmod 770 "${BASE_DIR}"/gunicorn.sock
 
     
     sudo bash -c "printf '%s\n' 'server {
@@ -344,7 +344,7 @@ EOF"
     }
 
     location /api {
-        proxy_pass http://unix:${BASE_DIR}/api/gunicorn.sock;
+        proxy_pass http://unix:${BASE_DIR}/gunicorn.sock;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
