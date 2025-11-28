@@ -335,13 +335,22 @@ change_ownership() {
 wait_for_postgres() {
     local max_attempts=30
     local attempt=1
+    local auth_method="${1:-peer}"
     
-    log_info "Waiting for PostgreSQL to be ready..."
+    log_info "Waiting for PostgreSQL to be ready (auth: ${auth_method})..."
     
     while [ $attempt -le $max_attempts ]; do
-        if sudo -u postgres psql -c "SELECT 1;" &>/dev/null; then
-            log_success "PostgreSQL is ready (attempt ${attempt}/${max_attempts})"
-            return 0
+        if [ "${auth_method}" = "peer" ]; then
+            if sudo -u postgres psql -c "SELECT 1;" &>/dev/null 2>&1; then
+                log_success "PostgreSQL is ready (attempt ${attempt}/${max_attempts})"
+                return 0
+            fi
+        else
+            # Test with md5 authentication using zabe user
+            if PGPASSWORD="${USERNAME_DBPASS}" psql -h localhost -U "${USERNAME}" -d postgres -c "SELECT 1;" &>/dev/null 2>&1; then
+                log_success "PostgreSQL is ready (attempt ${attempt}/${max_attempts})"
+                return 0
+            fi
         fi
         
         log_info "PostgreSQL not ready yet, waiting... (${attempt}/${max_attempts})"
@@ -384,7 +393,8 @@ configure_postgres() {
     
     log_command "systemctl enable --now postgresql"
     
-    if ! wait_for_postgres; then
+    # Wait with peer authentication (default)
+    if ! wait_for_postgres "peer"; then
         return 1
     fi
     
@@ -399,11 +409,20 @@ configure_postgres() {
     pg_hba_file=$(sudo -u postgres psql -t -P format=unaligned -c "SHOW hba_file;")
     
     log_info "Configuring pg_hba.conf: ${pg_hba_file}"
-    sed -i 's/peer/md5/g' "${pg_hba_file}"
+    
+    # Backup original file
+    cp "${pg_hba_file}" "${pg_hba_file}.backup" 2>/dev/null || true
+    
+    # Change peer to md5 for local connections
+    sed -i 's/local\s\+all\s\+all\s\+peer/local   all             all                                     md5/' "${pg_hba_file}"
+    sed -i 's/host\s\+all\s\+all\s\+127\.0\.0\.1\/32\s\+ident/host    all             all             127.0.0.1\/32            md5/' "${pg_hba_file}"
+    sed -i 's/host\s\+all\s\+all\s\+::1\/128\s\+ident/host    all             all             ::1\/128                 md5/' "${pg_hba_file}"
     
     log_command "systemctl restart postgresql"
     
-    if ! wait_for_postgres; then
+    # Now wait with md5 authentication
+    if ! wait_for_postgres "md5"; then
+        log_error "PostgreSQL not accepting md5 authentication"
         return 1
     fi
     
