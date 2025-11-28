@@ -332,6 +332,48 @@ change_ownership() {
 # DATABASE OPERATIONS
 # ============================================================================
 
+wait_for_postgres() {
+    local max_attempts=30
+    local attempt=1
+    
+    log_info "Waiting for PostgreSQL to be ready..."
+    
+    while [ $attempt -le $max_attempts ]; do
+        if sudo -u postgres psql -c "SELECT 1;" &>/dev/null; then
+            log_success "PostgreSQL is ready (attempt ${attempt}/${max_attempts})"
+            return 0
+        fi
+        
+        log_info "PostgreSQL not ready yet, waiting... (${attempt}/${max_attempts})"
+        sleep 1
+        ((attempt++))
+    done
+    
+    log_error "PostgreSQL failed to become ready after ${max_attempts} seconds"
+    return 1
+}
+
+test_database_connection() {
+    local max_attempts=10
+    local attempt=1
+    
+    log_info "Testing database connection as user ${USERNAME}..."
+    
+    while [ $attempt -le $max_attempts ]; do
+        if PGPASSWORD="${USERNAME_DBPASS}" psql -h localhost -U "${USERNAME}" -d "${USERNAME}" -c "SELECT 1;" &>/dev/null; then
+            log_success "Database connection successful (attempt ${attempt}/${max_attempts})"
+            return 0
+        fi
+        
+        log_info "Database connection failed, retrying... (${attempt}/${max_attempts})"
+        sleep 2
+        ((attempt++))
+    done
+    
+    log_error "Failed to connect to database after ${max_attempts} attempts"
+    return 1
+}
+
 configure_postgres() {
     log_info "Configuring PostgreSQL..."
     
@@ -341,6 +383,10 @@ configure_postgres() {
     fi
     
     log_command "systemctl enable --now postgresql"
+    
+    if ! wait_for_postgres; then
+        return 1
+    fi
     
     log_info "Creating database user and database..."
     sudo -u postgres psql -c "DROP USER IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}"
@@ -356,7 +402,17 @@ configure_postgres() {
     sed -i 's/peer/md5/g' "${pg_hba_file}"
     
     log_command "systemctl restart postgresql"
-    log_success "PostgreSQL configured"
+    
+    if ! wait_for_postgres; then
+        return 1
+    fi
+    
+    if ! test_database_connection; then
+        log_error "Database connection test failed"
+        return 1
+    fi
+    
+    log_success "PostgreSQL configured and tested successfully"
 }
 
 cleanup_postgres() {
@@ -368,16 +424,20 @@ cleanup_postgres() {
     fi
     
     if systemctl is-active --quiet postgresql; then
+        log_info "Terminating active database connections..."
         sudo -u postgres psql -c "SELECT pg_terminate_backend(pg_stat_activity.pid) 
                                    FROM pg_stat_activity 
                                    WHERE datname = '${USERNAME}' AND pid <> pg_backend_pid();" 2>&1 | tee -a "${LOG_FILE}"
         
+        log_info "Dropping database and user..."
         sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME} WITH (FORCE);" 2>&1 | tee -a "${LOG_FILE}"
         sudo -u postgres psql -c "DROP USER IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}"
     fi
     
     log_command "systemctl stop postgresql.service"
+    log_command "systemctl disable postgresql.service"
     log_command "systemctl stop nginx.service"
+    log_command "systemctl disable nginx.service"
     
     log_success "PostgreSQL cleaned"
 }
@@ -659,15 +719,25 @@ EOF
 run_django_migrations() {
     log_info "Running Django migrations..."
     
-    source "${BASE_DIR}/venv/bin/activate"
+    if ! test_database_connection; then
+        log_error "Database not ready for migrations"
+        return 1
+    fi
     
     cd "${BASE_DIR}"
     
-    python3 manage.py makemigrations 2>&1 | tee -a "${LOG_FILE}"
-    python3 manage.py migrate 2>&1 | tee -a "${LOG_FILE}"
-    python3 manage.py collectstatic --noinput 2>&1 | tee -a "${LOG_FILE}"
-    
-    deactivate
+    # Execute as user zabe to match .env credentials
+    if ! sudo -u "${USERNAME}" bash -c "
+        source ${BASE_DIR}/venv/bin/activate
+        cd ${BASE_DIR}
+        python3 manage.py makemigrations 2>&1
+        python3 manage.py migrate 2>&1
+        python3 manage.py collectstatic --noinput 2>&1
+        deactivate
+    " | tee -a "${LOG_FILE}"; then
+        log_error "Django migrations failed"
+        return 1
+    fi
     
     log_success "Django migrations completed"
 }
@@ -739,29 +809,63 @@ install_zdac() {
     read -p "Press Enter to continue..."
 }
 
+cleanup_temp_files() {
+    log_info "Cleaning temporary files..."
+    
+    rm -f /tmp/dac.zip 2>/dev/null || true
+    rm -f /tmp/web.zip 2>/dev/null || true
+    rm -f /tmp/zdac-* 2>/dev/null || true
+    
+    log_success "Temporary files cleaned"
+}
+
+cleanup_logs() {
+    log_info "Do you want to remove log files? (y/N)"
+    read -r -n 1 response
+    echo
+    
+    if [[ "${response}" =~ ^[Yy]$ ]]; then
+        if [[ -d "${LOG_DIR}" ]]; then
+            rm -rf "${LOG_DIR}"
+            log_success "Log files removed"
+        fi
+    else
+        log_info "Log files preserved at: ${LOG_DIR}"
+    fi
+}
+
 uninstall_zdac() {
     log_info "Starting Zabe Gateway uninstallation..."
     
-    cleanup_nginx
+    # Stop services first to prevent file locks
     remove_all_services
     
+    # Stop and disable system services
+    cleanup_nginx
+    cleanup_postgres
+    
+    # Remove application directories
     if [[ -d "${WEB_DIR}" ]]; then
         rm -rf "${WEB_DIR:?}"/*
         log_success "Web directory cleaned"
     fi
     
     if [[ -d "${BASE_DIR}" ]]; then
-        rm -rf "${BASE_DIR:?}"
-        log_success "Base directory removed"
+        # Remove everything except logs
+        find "${BASE_DIR}" -mindepth 1 -maxdepth 1 ! -name 'logs' -exec rm -rf {} + 2>/dev/null || true
+        log_success "Base directory cleaned (logs preserved)"
     fi
     
-    cleanup_postgres
+    # Clean system configurations
     remove_user_groups
     remove_auxiliary_packages
     remove_sudo_nopasswd
+    cleanup_temp_files
+    
+    # Ask about logs
+    cleanup_logs
     
     log_success "Zabe Gateway uninstalled successfully!"
-    log_info "Log file preserved: ${LOG_FILE}"
     
     read -p "Press Enter to continue..."
 }
