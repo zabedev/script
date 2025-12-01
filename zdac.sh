@@ -168,18 +168,21 @@ install_auxiliary_packages() {
 }
 
 remove_auxiliary_packages() {
-    log_info "Removing auxiliary packages..."
-    
-    log_command "systemctl disable postgresql.service"
-    log_command "systemctl disable nginx.service"
-    log_command "systemctl stop nginx.service" 
-    log_command "apt remove supervisor nginx postgresql -y"
-    log_command "apt purge supervisor* nginx* postgresql* -y"
-    log_command "apt autoremove -y"
-    log_command "apt clean"
-    
-    log_success "Auxiliary packages removed"
+    log_info "Removing auxiliary packages (non-interactive)..."
+
+    systemctl disable postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
+    systemctl disable nginx.service 2>&1 | tee -a "${LOG_FILE}" || true
+    systemctl stop nginx.service 2>&1 | tee -a "${LOG_FILE}" || true
+
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -y -q remove --purge supervisor nginx postgresql* || true
+    apt-get -y -q autoremove || true
+    apt-get -y -q purge --auto-remove || true
+    apt-get -y -q clean || true
+
+    log_success "Auxiliary packages removed (best-effort)."
 }
+
 
 # ============================================================================
 # USER & PERMISSIONS MANAGEMENT
@@ -435,31 +438,75 @@ configure_postgres() {
 }
 
 cleanup_postgres() {
-    log_info "Cleaning up PostgreSQL..."
-    
+    log_info "Cleaning up PostgreSQL (safe mode)..."
+
     if ! check_command psql; then
         log_warning "PostgreSQL not installed, skipping cleanup"
         return 0
     fi
-    
-    if systemctl is-active --quiet postgresql; then
-        log_info "Terminating active database connections..."
-        sudo -u postgres psql -c "SELECT pg_terminate_backend(pg_stat_activity.pid) 
-                                   FROM pg_stat_activity 
-                                   WHERE datname = '${USERNAME}' AND pid <> pg_backend_pid();" 2>&1 | tee -a "${LOG_FILE}"
-        
-        log_info "Dropping database and user..."
-        sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME} WITH (FORCE);" 2>&1 | tee -a "${LOG_FILE}"
-        sudo -u postgres psql -c "DROP USER IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}"
+
+    # Try to stop service gracefully
+    log_info "Stopping postgresql service..."
+    systemctl stop postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
+
+    # Wait up to 15s for postgres processes to exit
+    local wait=0
+    while pgrep -x postgres >/dev/null 2>&1 && [ $wait -lt 15 ]; do
+        log_info "Waiting for postgres processes to exit... (${wait})"
+        sleep 1
+        wait=$((wait+1))
+    done
+
+    # Terminate connections to DB (use timeout to prevent hang)
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10s sudo -u postgres psql -t -c \
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid();" \
+            2>&1 | tee -a "${LOG_FILE}" || true
+    else
+        sudo -u postgres psql -t -c \
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid();" \
+            2>&1 | tee -a "${LOG_FILE}" || true
     fi
-    
-    log_command "systemctl stop postgresql.service"
-    log_command "systemctl disable postgresql.service"
-    log_command "systemctl stop nginx.service"
-    log_command "systemctl disable nginx.service"
-    
-    log_success "PostgreSQL cleaned"
+
+    # Give a short time then force kill any remaining postgres processes
+    sleep 1
+    if pgrep -x postgres >/dev/null 2>&1; then
+        log_warning "Forcing kill of remaining postgres processes..."
+        pkill -9 -u postgres || true
+        pkill -9 postgres || true
+    fi
+
+    # Remove DB and user (use timeout as well)
+    if [ -x "$(command -v timeout)" ]; then
+        timeout 10s sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
+        timeout 10s sudo -u postgres psql -c "DROP ROLE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
+    else
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
+        sudo -u postgres psql -c "DROP ROLE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
+    fi
+
+    # Stop and disable services
+    systemctl stop postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
+    systemctl disable postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
+
+    # Remove packages non-interactively
+    log_info "Removing postgresql packages (non-interactive)..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -y -q purge postgresql\* postgresql-client\* postgresql-contrib\* 2>&1 | tee -a "${LOG_FILE}" || true
+    apt-get -y -q autoremove 2>&1 | tee -a "${LOG_FILE}" || true
+    apt-get -y -q clean 2>&1 | tee -a "${LOG_FILE}" || true
+
+    # Remove leftover data dirs (only if you really want to)
+    if [[ -d /var/lib/postgresql ]]; then
+        rm -rf /var/lib/postgresql || log_warning "Failed to remove /var/lib/postgresql"
+    fi
+    if [[ -d /etc/postgresql ]]; then
+        rm -rf /etc/postgresql || log_warning "Failed to remove /etc/postgresql"
+    fi
+
+    log_success "PostgreSQL cleaned (best-effort)."
 }
+
 
 # ============================================================================
 # SERVICE MANAGEMENT
@@ -509,6 +556,7 @@ create_supervisor_config() {
 directory=${directory}
 command=${command}
 $([ -n "$environment" ] && echo "environment=${environment}")
+user=${USERNAME}
 autostart=true
 autorestart=true
 stderr_logfile=${LOG_DIR}/supervisor/${service_name}_err.log
