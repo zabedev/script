@@ -810,8 +810,180 @@ run_django_migrations() {
 }
 
 # ============================================================================
+# UPDATE FRONTEND
+# ============================================================================
+update_frontend(){
+    log_info "Starting Frontend Update..."
+    # Validação de segurança do diretório
+    
+    if [[ ! -d "${WEB_DIR}" ]]; then
+        log_error "Diretório web não encontrado (${WEB_DIR}). Impossível atualizar."
+        show_message "Erro" "Frontend não instalado."
+        return 1
+    fi
+
+    # 1. Download do novo pacote em área temporária
+    local temp_web="/tmp/web_update.zip"
+    log_info "Baixando nova versão do frontend..."
+    if ! download_file "${temp_web}" "${SERVER_URL}/web.zip"; then
+        log_error "Falha no download. Abortando atualização."
+        return 1
+    fi
+
+    # 2. LIMPEZA CRÍTICA (REMOÇÃO DOS ARQUIVOS ANTIGOS)
+    # O :? garante que se a variável estiver vazia, o comando falha e não apaga a raiz
+    log_info "Limpando arquivos antigos em: ${WEB_DIR}..."
+    rm -rf "${WEB_DIR:?}"/*
+    
+    # Verifica se limpou mesmo
+    if [[ "$(ls -A ${WEB_DIR})" ]]; then
+         log_warning "O diretório não ficou totalmente vazio, mas prosseguindo..."
+    else
+         log_success "Diretório limpo com sucesso."
+    fi
+
+    # 3. Extração dos novos arquivos
+    log_info "Extraindo novos arquivos..."
+    extract_archive "${temp_web}" "${WEB_DIR}"
+    rm -f "${temp_web}"
+
+    # 4. Ajuste de Permissões (Essencial para o Nginx ler os arquivos)
+    log_info "Ajustando permissões..."
+    change_ownership "www-data" "www-data" "${WEB_DIR}"
+    # Garante permissão de leitura para todos e escrita só para o dono
+    chmod -R 755 "${WEB_DIR}"
+
+    # 5. REINICIALIZAÇÃO DO NGINX
+    # Usamos 'reload' para zero downtime, ou 'restart' para forçar.
+    # Vou colocar 'restart' para garantir que ele limpe qualquer cache de descritor de arquivo.
+    log_info "Reiniciando servidor web (Nginx)..."
+    if log_command "systemctl restart nginx"; then
+        log_success "Nginx reiniciado com sucesso."
+    else
+        log_error "Falha ao reiniciar Nginx."
+        show_message "Aviso" "Ocorreu um erro ao reiniciar o Nginx."
+        return 1
+    fi
+
+    log_success "=== Frontend atualizado com sucesso! ==="
+    show_message "Sucesso" "Frontend atualizado com sucesso."
+}
+
+# ============================================================================
+# UPDATE BACKEND
+# ============================================================================
+update_backend(){
+    log_info "Starting Backend Update..."
+
+    # 1. Verificação de Segurança
+    if [[ ! -d "${BASE_DIR}" ]] || [[ ! -f "${BASE_DIR}/.env" ]]; then
+        log_error "Zabe Gateway not installed or .env missing. Cannot update."
+        show_message "Error" "Backend not installed. Please install first."
+        return 1
+    fi
+
+    # 2. Backup do .env crítico
+    log_info "Backing up configuration..."
+    cp "${BASE_DIR}/.env" "/tmp/dac_env_backup"
+    
+    # 3. Parar serviços para liberar arquivos
+    log_info "Stopping application services..."
+    systemctl stop dac-api
+    supervisorctl stop all
+
+    # 4. Download e Extração (Sobrescrevendo código)
+    local temp_dac="/tmp/dac_update.zip"
+    if ! download_file "${temp_dac}" "${SERVER_URL}/dac.zip"; then
+        log_error "Download failed. Aborting update."
+        # Tenta restaurar serviços
+        systemctl start dac-api
+        supervisorctl start all
+        return 1
+    fi
+
+    # Remove código antigo (exceto venv e logs para performance)
+    # Preservamos o venv para não ter que recompilar tudo no Raspberry Pi
+    find "${BASE_DIR}" -maxdepth 1 -not -name 'venv' -not -name 'logs' -not -name '.' -exec rm -rf {} +
+    
+    extract_archive "${temp_dac}" "${BASE_DIR}"
+    rm -f "${temp_dac}"
+
+    # 5. Restaurar .env e Permissões
+    log_info "Restoring configuration..."
+    mv "/tmp/dac_env_backup" "${BASE_DIR}/.env"
+    change_ownership "${USERNAME}" "${USERNAME}" "${BASE_DIR}"
+    chmod 600 "${BASE_DIR}/.env"
+
+    # 6. Atualizar Dependências e Banco de Dados
+    log_info "Updating dependencies and database..."
+    if ! sudo -u "${USERNAME}" bash -c "
+        source ${BASE_DIR}/venv/bin/activate
+        pip install -r ${BASE_DIR}/requirements.txt
+        python3 ${BASE_DIR}/manage.py migrate
+        python3 ${BASE_DIR}/manage.py collectstatic --noinput
+        deactivate
+    " 2>&1 | tee -a "${LOG_FILE}"; then
+        log_error "Failed to update dependencies/migrations."
+        return 1
+    fi
+
+    # 7. Reiniciar Serviços
+    log_info "Restarting services..."
+    
+    systemctl start dac-api
+    supervisorctl start all
+    
+    # Ajustar permissão do socket se necessário
+    sleep 2
+    if [[ -S "${BASE_DIR}/gunicorn.sock" ]]; then
+        chown "${USERNAME}:www-data" "${BASE_DIR}/gunicorn.sock"
+        chmod 770 "${BASE_DIR}/gunicorn.sock"
+    fi
+
+    log_success "Backend updated successfully!"
+    show_message "Success" "Backend updated successfully."
+
+}
+
+# ============================================================================
 # MAIN OPERATIONS
 # ============================================================================
+
+update_zdac() {
+    log_info "=== Iniciando Atualização Completa do Sistema (ZDAC) ==="
+    
+    # Pergunta de confirmação para o usuário antes de começar tudo
+    dialog --title "Confirmação" \
+           --yesno "Isso irá atualizar tanto o Backend quanto o Frontend.\n\nO sistema ficará indisponível durante o processo.\nDeseja continuar?" 10 60
+    
+    # Se o usuário escolher "Não" ou cancelar, sai da função
+    response=$?
+    if [ $response -ne 0 ]; then
+        log_info "Atualização completa cancelada pelo usuário."
+        return 0
+    fi
+
+    # Passo 1: Atualizar Backend
+    # Se falhar (!), paramos tudo imediatamente para não deixar o sistema inconsistente
+    if ! update_backend; then
+        log_error "A atualização do Backend falhou. Abortando atualização do Frontend para segurança."
+        show_message "Erro Crítico" "A atualização do Backend falhou.\nO Frontend não foi alterado.\nVerifique os logs."
+        return 1
+    fi
+
+    # Pequena pausa para garantir que serviços do backend liberaram recursos/sockets
+    sleep 3
+
+    # Passo 2: Atualizar Frontend
+    if ! update_frontend; then
+        log_error "A atualização do Backend funcionou, mas o Frontend falhou."
+        show_message "Erro Parcial" "Backend atualizado, mas houve erro no Frontend.\nVerifique os logs."
+        return 1
+    fi
+
+    log_success "=== Atualização Completa (Full Stack) Finalizada com Sucesso! ==="
+    show_message "Sucesso" "Sistema Zabe Gateway (Backend e Frontend)\natualizado com sucesso!"
+}
 
 install_zdac() {
     log_info "Starting Zabe Gateway installation..."
@@ -957,15 +1129,18 @@ show_message() {
 main_menu() {
     local cmd=(dialog --clear --backtitle "Zabe Gateway Manager v${SCRIPT_VERSION}" 
                --title "Main Menu" 
-               --menu "Select an option:" 15 60 6)
+               --menu "Selecione uma opção:" 17 60 9)
 
     local options=(
-        1 "Update operating system"
-        2 "Install Zabe Gateway"
-        3 "Reboot device"
-        4 "Uninstall Zabe Gateway"
-        5 "View logs"
-        6 "Exit"
+        1 "Atualizar Sistema Operacional (OS)"
+        2 "Instalar Zabe Gateway (Full Install)"
+        3 "Atualizar TUDO (Recomendado)"
+        4 "Atualizar Apenas Backend"
+        5 "Atualizar Apenas Frontend"
+        6 "Reiniciar Dispositivo"
+        7 "Desinstalar Zabe Gateway"
+        8 "Ver Logs"
+        9 "Sair"
     )
 
     local choice
@@ -975,21 +1150,24 @@ main_menu() {
     case $choice in
         1) update_system ;;
         2) install_zdac ;;
-        3) run_reboot ;;
-        4) uninstall_zdac ;;
-        5) 
+        3) update_zdac ;;      # Chama a função combinada
+        4) update_backend ;;   # Chama só backend
+        5) update_frontend ;;  # Chama só frontend
+        6) run_reboot ;;
+        7) uninstall_zdac ;;
+        8) 
             if [[ -f "${LOG_FILE}" ]]; then
                 less "${LOG_FILE}"
             else
-                show_message "Error" "Log file not found"
+                show_message "Erro" "Arquivo de log não encontrado"
             fi
             ;;
-        6) 
-            log_info "Exiting Zabe Gateway Manager"
+        9) 
+            log_info "Saindo..."
             exit 0 
             ;;
         *) 
-            show_message "Error" "Invalid option. Please try again."
+            show_message "Erro" "Opção inválida."
             ;;
     esac
 }
