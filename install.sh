@@ -6,12 +6,12 @@ set -euo pipefail
 # CONFIGURATION
 # ============================================================================
 
-readonly SCRIPT_VERSION="3.0.5"
+readonly SCRIPT_VERSION="3.0.9"
 readonly USERNAME="zabe"
 readonly USERNAME_DBPASS="7bb073796c8a93"
 readonly ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
 readonly LANGUAGE_CODE="pt-BR"
-readonly TIME_ZONE="UTC"
+readonly TIME_ZONE="America/Sao_Paulo"
 readonly SECRET_KEY="django-insecure-vpo7np+n_333j@2dy6$&8tibp*sll(x$*6_7a!3!uc^cibb*"
 readonly SERVER_URL="https://raw.githubusercontent.com/zabedev/script/main"
 
