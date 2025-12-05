@@ -6,7 +6,7 @@ set -euo pipefail
 # CONFIGURATION
 # ============================================================================
 
-readonly SCRIPT_VERSION="2.0.1"
+readonly SCRIPT_VERSION="3.0.5"
 readonly USERNAME="zabe"
 readonly USERNAME_DBPASS="7bb073796c8a93"
 readonly ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
@@ -810,179 +810,351 @@ run_django_migrations() {
 }
 
 # ============================================================================
-# UPDATE FRONTEND
+# UPDATE FRONTEND - FIXED
 # ============================================================================
-update_frontend(){
+update_frontend() {
     log_info "Starting Frontend Update..."
-    # Validação de segurança do diretório
     
+    # Validação de segurança
     if [[ ! -d "${WEB_DIR}" ]]; then
-        log_error "Diretório web não encontrado (${WEB_DIR}). Impossível atualizar."
-        show_message "Erro" "Frontend não instalado."
+        log_error "Web directory not found: ${WEB_DIR}"
+        show_message "Error" "Frontend not installed."
         return 1
     fi
 
-    # 1. Download do novo pacote em área temporária
-    local temp_web="/tmp/web_update.zip"
-    log_info "Baixando nova versão do frontend..."
-    if ! download_file "${temp_web}" "${SERVER_URL}/web.zip"; then
-        log_error "Falha no download. Abortando atualização."
-        return 1
-    fi
-
-    # 2. LIMPEZA CRÍTICA (REMOÇÃO DOS ARQUIVOS ANTIGOS)
-    # O :? garante que se a variável estiver vazia, o comando falha e não apaga a raiz
-    log_info "Limpando arquivos antigos em: ${WEB_DIR}..."
-    rm -rf "${WEB_DIR:?}"/*
+    # Backup do frontend atual
+    local backup_dir="/tmp/web_backup_$(date +%Y%m%d_%H%M%S)"
+    log_info "Creating backup: ${backup_dir}"
     
-    # Verifica se limpou mesmo
-    if [[ "$(ls -A ${WEB_DIR})" ]]; then
-         log_warning "O diretório não ficou totalmente vazio, mas prosseguindo..."
-    else
-         log_success "Diretório limpo com sucesso."
+    if ! cp -r "${WEB_DIR}" "${backup_dir}"; then
+        log_error "Failed to create backup"
+        show_message "Error" "Backup failed. Update aborted."
+        return 1
     fi
 
-    # 3. Extração dos novos arquivos
-    log_info "Extraindo novos arquivos..."
-    extract_archive "${temp_web}" "${WEB_DIR}"
+    # Download do novo pacote
+    local temp_web="/tmp/web_update_$(date +%s).zip"
+    log_info "Downloading new frontend version..."
+    
+    if ! download_file "${temp_web}" "${SERVER_URL}/web.zip"; then
+        log_error "Download failed. Aborting update."
+        show_message "Error" "Failed to download frontend package."
+        rm -rf "${backup_dir}"
+        return 1
+    fi
+
+    # Validar arquivo baixado
+    if [[ ! -s "${temp_web}" ]]; then
+        log_error "Downloaded file is empty or corrupted"
+        rm -f "${temp_web}"
+        rm -rf "${backup_dir}"
+        return 1
+    fi
+
+    # Limpar diretório web (com safety check)
+    log_info "Cleaning old files in: ${WEB_DIR}"
+    if [[ -z "${WEB_DIR}" ]] || [[ "${WEB_DIR}" == "/" ]]; then
+        log_error "Invalid WEB_DIR path. Aborting for safety."
+        rm -f "${temp_web}"
+        rm -rf "${backup_dir}"
+        return 1
+    fi
+    
+    find "${WEB_DIR}" -mindepth 1 -delete 2>&1 | tee -a "${LOG_FILE}"
+
+    # Extrair novos arquivos
+    log_info "Extracting new files..."
+    if ! extract_archive "${temp_web}" "${WEB_DIR}"; then
+        log_error "Extraction failed. Rolling back..."
+        rm -rf "${WEB_DIR:?}"/*
+        cp -r "${backup_dir}"/* "${WEB_DIR}/"
+        rm -f "${temp_web}"
+        rm -rf "${backup_dir}"
+        show_message "Error" "Extraction failed. Rollback completed."
+        return 1
+    fi
+
     rm -f "${temp_web}"
 
-    # 4. Ajuste de Permissões (Essencial para o Nginx ler os arquivos)
-    log_info "Ajustando permissões..."
-    change_ownership "www-data" "www-data" "${WEB_DIR}"
-    # Garante permissão de leitura para todos e escrita só para o dono
-    chmod -R 755 "${WEB_DIR}"
-
-    # 5. REINICIALIZAÇÃO DO NGINX
-    # Usamos 'reload' para zero downtime, ou 'restart' para forçar.
-    # Vou colocar 'restart' para garantir que ele limpe qualquer cache de descritor de arquivo.
-    log_info "Reiniciando servidor web (Nginx)..."
-    if log_command "systemctl restart nginx"; then
-        log_success "Nginx reiniciado com sucesso."
-    else
-        log_error "Falha ao reiniciar Nginx."
-        show_message "Aviso" "Ocorreu um erro ao reiniciar o Nginx."
+    # Validar extração
+    if [[ ! "$(ls -A ${WEB_DIR})" ]]; then
+        log_error "Extraction resulted in empty directory. Rolling back..."
+        cp -r "${backup_dir}"/* "${WEB_DIR}/"
+        rm -rf "${backup_dir}"
+        show_message "Error" "Empty directory after extraction. Rollback completed."
         return 1
     fi
 
-    log_success "=== Frontend atualizado com sucesso! ==="
-    show_message "Sucesso" "Frontend atualizado com sucesso."
+    # Ajustar permissões
+    log_info "Adjusting permissions..."
+    if ! change_ownership "www-data" "www-data" "${WEB_DIR}"; then
+        log_warning "Failed to change ownership, but continuing..."
+    fi
+    
+    chmod -R 755 "${WEB_DIR}" 2>&1 | tee -a "${LOG_FILE}"
+
+    # Testar configuração do Nginx antes de reiniciar
+    log_info "Testing Nginx configuration..."
+    if ! nginx -t 2>&1 | tee -a "${LOG_FILE}"; then
+        log_error "Nginx configuration test failed"
+        show_message "Warning" "Nginx config error detected. Check logs."
+    fi
+
+    # Reiniciar Nginx
+    log_info "Reloading Nginx..."
+    if log_command "systemctl reload nginx"; then
+        log_success "Nginx reloaded successfully"
+    else
+        log_warning "Reload failed, trying restart..."
+        if ! log_command "systemctl restart nginx"; then
+            log_error "Failed to restart Nginx"
+            show_message "Error" "Nginx restart failed. Manual intervention required."
+            rm -rf "${backup_dir}"
+            return 1
+        fi
+    fi
+
+    # Remover backup após sucesso
+    rm -rf "${backup_dir}"
+    
+    log_success "Frontend updated successfully!"
+    show_message "Success" "Frontend updated successfully."
+    return 0
 }
 
 # ============================================================================
-# UPDATE BACKEND
+# UPDATE BACKEND - FIXED
 # ============================================================================
-update_backend(){
+update_backend() {
     log_info "Starting Backend Update..."
 
-    # 1. Verificação de Segurança
+    # Validação de segurança
     if [[ ! -d "${BASE_DIR}" ]] || [[ ! -f "${BASE_DIR}/.env" ]]; then
-        log_error "Zabe Gateway not installed or .env missing. Cannot update."
+        log_error "Zabe Gateway not installed or .env missing"
         show_message "Error" "Backend not installed. Please install first."
         return 1
     fi
 
-    # 2. Backup do .env crítico
-    log_info "Backing up configuration..."
-    cp "${BASE_DIR}/.env" "/tmp/dac_env_backup"
+    # Criar backup completo (exceto venv por tamanho)
+    local backup_dir="/tmp/dac_backup_$(date +%Y%m%d_%H%M%S)"
+    log_info "Creating backend backup: ${backup_dir}"
     
-    # 3. Parar serviços para liberar arquivos
-    log_info "Stopping application services..."
-    systemctl stop dac-api
-    supervisorctl stop all
+    mkdir -p "${backup_dir}"
+    
+    # Backup seletivo de arquivos críticos
+    cp "${BASE_DIR}/.env" "${backup_dir}/.env"
+    
+    if [[ -d "${BASE_DIR}/backend" ]]; then
+        cp -r "${BASE_DIR}/backend" "${backup_dir}/" 2>/dev/null || true
+    fi
+    
+    if [[ -f "${BASE_DIR}/manage.py" ]]; then
+        cp "${BASE_DIR}/manage.py" "${backup_dir}/" 2>/dev/null || true
+    fi
 
-    # 4. Download e Extração (Sobrescrevendo código)
-    local temp_dac="/tmp/dac_update.zip"
+    # Parar serviços
+    log_info "Stopping application services..."
+    systemctl stop dac-api 2>&1 | tee -a "${LOG_FILE}" || true
+    supervisorctl stop all 2>&1 | tee -a "${LOG_FILE}" || true
+    
+    # Aguardar processos finalizarem
+    sleep 3
+
+    # Download do novo pacote
+    local temp_dac="/tmp/dac_update_$(date +%s).zip"
+    log_info "Downloading new backend version..."
+    
     if ! download_file "${temp_dac}" "${SERVER_URL}/dac.zip"; then
-        log_error "Download failed. Aborting update."
-        # Tenta restaurar serviços
+        log_error "Download failed. Starting services..."
         systemctl start dac-api
         supervisorctl start all
+        rm -rf "${backup_dir}"
+        show_message "Error" "Failed to download backend package."
         return 1
     fi
 
-    # Remove código antigo (exceto venv e logs para performance)
-    # Preservamos o venv para não ter que recompilar tudo no Raspberry Pi
-    find "${BASE_DIR}" -maxdepth 1 -not -name 'venv' -not -name 'logs' -not -name '.' -exec rm -rf {} +
+    # Validar arquivo baixado
+    if [[ ! -s "${temp_dac}" ]]; then
+        log_error "Downloaded file is empty or corrupted"
+        rm -f "${temp_dac}"
+        systemctl start dac-api
+        supervisorctl start all
+        rm -rf "${backup_dir}"
+        return 1
+    fi
+
+    # Remover código antigo (preservando venv, logs e .env)
+    log_info "Removing old code (preserving venv and logs)..."
     
-    extract_archive "${temp_dac}" "${BASE_DIR}"
+    if [[ -z "${BASE_DIR}" ]] || [[ "${BASE_DIR}" == "/" ]]; then
+        log_error "Invalid BASE_DIR path. Aborting for safety."
+        rm -f "${temp_dac}"
+        systemctl start dac-api
+        supervisorctl start all
+        rm -rf "${backup_dir}"
+        return 1
+    fi
+    
+    find "${BASE_DIR}" -mindepth 1 -maxdepth 1 \
+        -not -name 'venv' \
+        -not -name 'logs' \
+        -not -name '.env' \
+        -exec rm -rf {} + 2>&1 | tee -a "${LOG_FILE}"
+
+    # Extrair novos arquivos
+    log_info "Extracting new backend files..."
+    if ! extract_archive "${temp_dac}" "${BASE_DIR}"; then
+        log_error "Extraction failed. Attempting rollback..."
+        
+        # Restaurar arquivos críticos
+        cp "${backup_dir}/.env" "${BASE_DIR}/.env"
+        
+        if [[ -d "${backup_dir}/backend" ]]; then
+            cp -r "${backup_dir}/backend" "${BASE_DIR}/"
+        fi
+        
+        rm -f "${temp_dac}"
+        systemctl start dac-api
+        supervisorctl start all
+        rm -rf "${backup_dir}"
+        show_message "Error" "Extraction failed. Rollback completed."
+        return 1
+    fi
+
     rm -f "${temp_dac}"
 
-    # 5. Restaurar .env e Permissões
+    # Restaurar .env (sobrescrever o extraído)
     log_info "Restoring configuration..."
-    mv "/tmp/dac_env_backup" "${BASE_DIR}/.env"
+    cp "${backup_dir}/.env" "${BASE_DIR}/.env"
+
+    # Ajustar permissões
+    log_info "Adjusting permissions..."
     change_ownership "${USERNAME}" "${USERNAME}" "${BASE_DIR}"
     chmod 600 "${BASE_DIR}/.env"
 
-    # 6. Atualizar Dependências e Banco de Dados
-    log_info "Updating dependencies and database..."
+    # Atualizar dependências Python
+    log_info "Updating Python dependencies..."
     if ! sudo -u "${USERNAME}" bash -c "
         source ${BASE_DIR}/venv/bin/activate
-        pip install -r ${BASE_DIR}/requirements.txt
-        python3 ${BASE_DIR}/manage.py migrate
-        python3 ${BASE_DIR}/manage.py collectstatic --noinput
+        pip install --upgrade pip --quiet
+        pip install -r ${BASE_DIR}/requirements.txt --quiet
         deactivate
     " 2>&1 | tee -a "${LOG_FILE}"; then
-        log_error "Failed to update dependencies/migrations."
-        return 1
+        log_error "Failed to update dependencies"
+        show_message "Warning" "Dependencies update failed. Check logs."
     fi
 
-    # 7. Reiniciar Serviços
-    log_info "Restarting services..."
-    
-    systemctl start dac-api
-    supervisorctl start all
-    
-    # Ajustar permissão do socket se necessário
+    # Executar migrações do Django
+    log_info "Running database migrations..."
+    if ! sudo -u "${USERNAME}" bash -c "
+        source ${BASE_DIR}/venv/bin/activate
+        cd ${BASE_DIR}
+        python3 manage.py migrate --noinput 2>&1
+        python3 manage.py collectstatic --noinput 2>&1
+        deactivate
+    " 2>&1 | tee -a "${LOG_FILE}"; then
+        log_error "Migrations or collectstatic failed"
+        show_message "Warning" "Database update failed. Check logs."
+    fi
+
+    # Reiniciar serviços
+    log_info "Starting services..."
+    systemctl start dac-api 2>&1 | tee -a "${LOG_FILE}"
     sleep 2
+    supervisorctl start all 2>&1 | tee -a "${LOG_FILE}"
+    
+    # Aguardar socket do gunicorn
+    local wait_count=0
+    while [[ ! -S "${BASE_DIR}/gunicorn.sock" ]] && [[ ${wait_count} -lt 10 ]]; do
+        log_info "Waiting for gunicorn socket... (${wait_count}/10)"
+        sleep 1
+        ((wait_count++))
+    done
+
+    # Ajustar permissões do socket
     if [[ -S "${BASE_DIR}/gunicorn.sock" ]]; then
         chown "${USERNAME}:www-data" "${BASE_DIR}/gunicorn.sock"
         chmod 770 "${BASE_DIR}/gunicorn.sock"
+        log_success "Gunicorn socket configured"
+    else
+        log_warning "Gunicorn socket not found after 10 seconds"
     fi
 
+    # Verificar se serviços estão ativos
+    if systemctl is-active --quiet dac-api; then
+        log_success "dac-api service is running"
+    else
+        log_error "dac-api service failed to start"
+        show_message "Error" "Backend service failed to start. Check logs."
+        rm -rf "${backup_dir}"
+        return 1
+    fi
+
+    # Remover backup após sucesso
+    rm -rf "${backup_dir}"
+    
     log_success "Backend updated successfully!"
     show_message "Success" "Backend updated successfully."
-
+    return 0
 }
 
 # ============================================================================
-# MAIN OPERATIONS
+# UPDATE FULL SYSTEM - FIXED
 # ============================================================================
-
 update_zdac() {
-    log_info "=== Iniciando Atualização Completa do Sistema (ZDAC) ==="
+    log_info "=== Starting Full System Update (ZDAC) ==="
     
-    # Pergunta de confirmação para o usuário antes de começar tudo
-    dialog --title "Confirmação" \
-           --yesno "Isso irá atualizar tanto o Backend quanto o Frontend.\n\nO sistema ficará indisponível durante o processo.\nDeseja continuar?" 10 60
-    
-    # Se o usuário escolher "Não" ou cancelar, sai da função
-    response=$?
-    if [ $response -ne 0 ]; then
-        log_info "Atualização completa cancelada pelo usuário."
+    # Confirmação do usuário
+    if ! dialog --title "Confirmation" \
+           --yesno "This will update both Backend and Frontend.\n\nThe system will be temporarily unavailable.\n\nDo you want to continue?" 10 60; then
+        log_info "Full update cancelled by user"
         return 0
     fi
 
-    # Passo 1: Atualizar Backend
-    # Se falhar (!), paramos tudo imediatamente para não deixar o sistema inconsistente
-    if ! update_backend; then
-        log_error "A atualização do Backend falhou. Abortando atualização do Frontend para segurança."
-        show_message "Erro Crítico" "A atualização do Backend falhou.\nO Frontend não foi alterado.\nVerifique os logs."
+    local backend_success=false
+    local frontend_success=false
+
+    # Atualizar Backend
+    log_info "Step 1/2: Updating Backend..."
+    if update_backend; then
+        backend_success=true
+        log_success "Backend updated successfully"
+    else
+        log_error "Backend update failed"
+        show_message "Critical Error" "Backend update failed.\nFrontend will not be updated.\nCheck logs for details."
         return 1
     fi
 
-    # Pequena pausa para garantir que serviços do backend liberaram recursos/sockets
+    # Pequena pausa para estabilização
     sleep 3
 
-    # Passo 2: Atualizar Frontend
-    if ! update_frontend; then
-        log_error "A atualização do Backend funcionou, mas o Frontend falhou."
-        show_message "Erro Parcial" "Backend atualizado, mas houve erro no Frontend.\nVerifique os logs."
+    # Atualizar Frontend
+    log_info "Step 2/2: Updating Frontend..."
+    if update_frontend; then
+        frontend_success=true
+        log_success "Frontend updated successfully"
+    else
+        log_error "Frontend update failed"
+        show_message "Partial Error" "Backend updated successfully,\nbut Frontend update failed.\nCheck logs for details."
         return 1
     fi
 
-    log_success "=== Atualização Completa (Full Stack) Finalizada com Sucesso! ==="
-    show_message "Sucesso" "Sistema Zabe Gateway (Backend e Frontend)\natualizado com sucesso!"
+    # Verificação final
+    if ${backend_success} && ${frontend_success}; then
+        log_success "=== Full System Update Completed Successfully! ==="
+        
+        # Obter IP do servidor para mostrar ao usuário
+        local server_ip
+        server_ip=$(hostname -I | awk '{print $1}')
+        
+        dialog --title "Success" \
+               --msgbox "Zabe Gateway (Backend and Frontend)\nupdated successfully!\n\nAccess: http://${server_ip}" 10 50
+        
+        return 0
+    else
+        log_error "Update completed with errors"
+        return 1
+    fi
 }
 
 install_zdac() {
