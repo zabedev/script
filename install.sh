@@ -524,7 +524,9 @@ create_systemd_service() {
     cat > "${SYSTEMD_SERVICE_DIR}/${service_name}.service" <<EOF
 [Unit]
 Description=${service_name} Service
-After=network.target
+After=network.target postgresql.service
+Requires=postgresql.service
+Before=nginx.service
 
 [Service]
 WorkingDirectory=${directory}
@@ -588,6 +590,9 @@ start_services() {
         log_command "systemctl enable ${service}"
     done
     
+    log_command "systemctl enable nginx"
+    log_command "systemctl start nginx"
+
     log_success "All services started"
 }
 
