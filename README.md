@@ -10,7 +10,7 @@ Este documento descreve como instalar, atualizar, remover e reiniciar o
 Para iniciar o processo, execute:
 
 ``` bash
-curl -s https://raw.githubusercontent.com/zabedev/script/main/install.sh | sudo bash
+curl -s https://raw.githubusercontent.com/zabedev/script/main/v3/install.sh | sudo bash
 ```
 
 O comando baixa e executa o instalador, que abrirá um menu interativo.

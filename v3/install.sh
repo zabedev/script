@@ -13,7 +13,7 @@ readonly ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
 readonly LANGUAGE_CODE="pt-BR"
 readonly TIME_ZONE="America/Sao_Paulo"
 readonly SECRET_KEY="django-insecure-vpo7np+n_333j@2dy6$&8tibp*sll(x$*6_7a!3!uc^cibb*"
-readonly SERVER_URL="https://raw.githubusercontent.com/zabedev/script/main"
+readonly SERVER_URL="https://raw.githubusercontent.com/zabedev/script/main/v3"
 
 readonly BASE_DIR="/opt/dac"
 readonly WEB_DIR="/var/www/html"
