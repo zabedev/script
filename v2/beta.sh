@@ -6,7 +6,7 @@ set -euo pipefail
 # CONFIGURATION
 # ============================================================================
 
-readonly SCRIPT_VERSION="2.0.9"
+readonly SCRIPT_VERSION="3.0.9"
 readonly USERNAME="zabe"
 readonly USERNAME_DBPASS="7bb073796c8a93"
 readonly ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
@@ -34,11 +34,11 @@ readonly REQUIRED_PACKAGES="wget zip unzip supervisor python3-dev python3-venv p
 
 log_init() {
     if [[ ! -d "${LOG_DIR}" ]]; then
-        sudo mkdir -p "${LOG_DIR}"  || mkdir -p "${LOG_DIR}"
+        sudo mkdir -p "${LOG_DIR}" 2>/dev/null || mkdir -p "${LOG_DIR}"
     fi
     
     if [[ ! -f "${LOG_FILE}" ]]; then
-        sudo touch "${LOG_FILE}"  || touch "${LOG_FILE}"
+        sudo touch "${LOG_FILE}" 2>/dev/null || touch "${LOG_FILE}"
     fi
     
     log_info "=== Zabe Gateway Manager v${SCRIPT_VERSION} Started ==="
@@ -78,7 +78,7 @@ log_command() {
     local cmd="$*"
     log_info "Executing: ${cmd}"
     
-    if eval "$cmd" | sudo tee -a "${LOG_FILE}"; then
+    if eval "$cmd" | sudo tee -a "${LOG_FILE}" >/dev/null; then
         log_success "Command succeeded: ${cmd}"
         return 0
     else
@@ -101,7 +101,7 @@ check_root() {
 
 check_command() {
     local cmd="$1"
-    if ! command -v "${cmd}"; then
+    if ! command -v "${cmd}" &>/dev/null; then
         log_warning "Command '${cmd}' not found"
         return 1
     fi
@@ -170,9 +170,9 @@ install_auxiliary_packages() {
 remove_auxiliary_packages() {
     log_info "Removing auxiliary packages (non-interactive)..."
 
-    systemctl disable postgresql.service  | tee -a "${LOG_FILE}" || true
-    systemctl disable nginx.service  | tee -a "${LOG_FILE}" || true
-    systemctl stop nginx.service  | tee -a "${LOG_FILE}" || true
+    systemctl disable postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
+    systemctl disable nginx.service 2>&1 | tee -a "${LOG_FILE}" || true
+    systemctl stop nginx.service 2>&1 | tee -a "${LOG_FILE}" || true
 
     export DEBIAN_FRONTEND=noninteractive
     apt-get -y -q remove --purge supervisor nginx postgresql* || true
@@ -215,9 +215,9 @@ remove_sudo_nopasswd() {
 configure_user_groups() {
     log_info "Configuring user groups..."
     
-    usermod -a -G www-data "${USERNAME}"  || log_warning "Failed to add ${USERNAME} to www-data"
-    usermod -a -G "${USERNAME}" www-data  || log_warning "Failed to add www-data to ${USERNAME}"
-    usermod -a -G www-data root  || log_warning "Failed to add root to www-data"
+    usermod -a -G www-data "${USERNAME}" 2>/dev/null || log_warning "Failed to add ${USERNAME} to www-data"
+    usermod -a -G "${USERNAME}" www-data 2>/dev/null || log_warning "Failed to add www-data to ${USERNAME}"
+    usermod -a -G www-data root 2>/dev/null || log_warning "Failed to add root to www-data"
     
     log_success "User groups configured"
 }
@@ -226,7 +226,7 @@ remove_user_groups() {
     log_info "Removing user from groups..."
     
     if getent group www-data | grep -q "${USERNAME}"; then
-        deluser "${USERNAME}" www-data  || log_warning "Failed to remove ${USERNAME} from www-data"
+        deluser "${USERNAME}" www-data 2>/dev/null || log_warning "Failed to remove ${USERNAME} from www-data"
     fi
     
     log_success "User groups cleaned"
@@ -278,7 +278,7 @@ download_file() {
     
     log_info "Downloading: ${url}"
     
-    if ! wget -q --show-progress -O "${destination}" "${url}"  | tee -a "${LOG_FILE}"; then
+    if ! wget -q --show-progress -O "${destination}" "${url}" 2>&1 | tee -a "${LOG_FILE}"; then
         log_error "Failed to download: ${url}"
         return 1
     fi
@@ -292,7 +292,7 @@ extract_archive() {
     
     log_info "Extracting: ${archive_path} to ${destination}"
     
-    if ! unzip -oq "${archive_path}" -d "${destination}"  | tee -a "${LOG_FILE}"; then
+    if ! unzip -oq "${archive_path}" -d "${destination}" 2>&1 | tee -a "${LOG_FILE}"; then
         log_error "Failed to extract: ${archive_path}"
         return 1
     fi
@@ -344,13 +344,13 @@ wait_for_postgres() {
     
     while [ $attempt -le $max_attempts ]; do
         if [ "${auth_method}" = "peer" ]; then
-            if sudo -u postgres psql -c "SELECT 1;"  ; then
+            if sudo -u postgres psql -c "SELECT 1;" &>/dev/null 2>&1; then
                 log_success "PostgreSQL is ready (attempt ${attempt}/${max_attempts})"
                 return 0
             fi
         else
             # Test with md5 authentication using zabe user
-            if PGPASSWORD="${USERNAME_DBPASS}" psql -h localhost -U "${USERNAME}" -d postgres -c "SELECT 1;"  ; then
+            if PGPASSWORD="${USERNAME_DBPASS}" psql -h localhost -U "${USERNAME}" -d postgres -c "SELECT 1;" &>/dev/null 2>&1; then
                 log_success "PostgreSQL is ready (attempt ${attempt}/${max_attempts})"
                 return 0
             fi
@@ -372,7 +372,7 @@ test_database_connection() {
     log_info "Testing database connection as user ${USERNAME}..."
     
     while [ $attempt -le $max_attempts ]; do
-        if PGPASSWORD="${USERNAME_DBPASS}" psql -h localhost -U "${USERNAME}" -d "${USERNAME}" -c "SELECT 1;" ; then
+        if PGPASSWORD="${USERNAME_DBPASS}" psql -h localhost -U "${USERNAME}" -d "${USERNAME}" -c "SELECT 1;" &>/dev/null; then
             log_success "Database connection successful (attempt ${attempt}/${max_attempts})"
             return 0
         fi
@@ -402,11 +402,11 @@ configure_postgres() {
     fi
     
     log_info "Creating database user and database..."
-    sudo -u postgres psql -c "DROP USER IF EXISTS ${USERNAME};"  | tee -a "${LOG_FILE}"
-    sudo -u postgres psql -c "CREATE USER ${USERNAME} WITH PASSWORD '${USERNAME_DBPASS}';"  | tee -a "${LOG_FILE}"
-    sudo -u postgres psql -c "ALTER USER ${USERNAME} WITH SUPERUSER;"  | tee -a "${LOG_FILE}"
-    sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};"  | tee -a "${LOG_FILE}"
-    sudo -u postgres psql -c "CREATE DATABASE ${USERNAME} OWNER ${USERNAME};"  | tee -a "${LOG_FILE}"
+    sudo -u postgres psql -c "DROP USER IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}"
+    sudo -u postgres psql -c "CREATE USER ${USERNAME} WITH PASSWORD '${USERNAME_DBPASS}';" 2>&1 | tee -a "${LOG_FILE}"
+    sudo -u postgres psql -c "ALTER USER ${USERNAME} WITH SUPERUSER;" 2>&1 | tee -a "${LOG_FILE}"
+    sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}"
+    sudo -u postgres psql -c "CREATE DATABASE ${USERNAME} OWNER ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}"
     
     local pg_hba_file
     pg_hba_file=$(sudo -u postgres psql -t -P format=unaligned -c "SHOW hba_file;")
@@ -414,7 +414,7 @@ configure_postgres() {
     log_info "Configuring pg_hba.conf: ${pg_hba_file}"
     
     # Backup original file
-    cp "${pg_hba_file}" "${pg_hba_file}.backup"  || true
+    cp "${pg_hba_file}" "${pg_hba_file}.backup" 2>/dev/null || true
     
     # Change peer to md5 for local connections
     sed -i 's/local\s\+all\s\+all\s\+peer/local   all             all                                     md5/' "${pg_hba_file}"
@@ -447,30 +447,30 @@ cleanup_postgres() {
 
     # Try to stop service gracefully
     log_info "Stopping postgresql service..."
-    systemctl stop postgresql.service  | tee -a "${LOG_FILE}" || true
+    systemctl stop postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
 
     # Wait up to 15s for postgres processes to exit
     local wait=0
-    while pgrep -x postgres >/dev/null  && [ $wait -lt 15 ]; do
+    while pgrep -x postgres >/dev/null 2>&1 && [ $wait -lt 15 ]; do
         log_info "Waiting for postgres processes to exit... (${wait})"
         sleep 1
         wait=$((wait+1))
     done
 
     # Terminate connections to DB (use timeout to prevent hang)
-    if command -v timeout >/dev/null ; then
+    if command -v timeout >/dev/null 2>&1; then
         timeout 10s sudo -u postgres psql -t -c \
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid();" \
-             | tee -a "${LOG_FILE}" || true
+            2>&1 | tee -a "${LOG_FILE}" || true
     else
         sudo -u postgres psql -t -c \
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid();" \
-             | tee -a "${LOG_FILE}" || true
+            2>&1 | tee -a "${LOG_FILE}" || true
     fi
 
     # Give a short time then force kill any remaining postgres processes
     sleep 1
-    if pgrep -x postgres >/dev/null ; then
+    if pgrep -x postgres >/dev/null 2>&1; then
         log_warning "Forcing kill of remaining postgres processes..."
         pkill -9 -u postgres || true
         pkill -9 postgres || true
@@ -478,23 +478,23 @@ cleanup_postgres() {
 
     # Remove DB and user (use timeout as well)
     if [ -x "$(command -v timeout)" ]; then
-        timeout 10s sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};"  | tee -a "${LOG_FILE}" || true
-        timeout 10s sudo -u postgres psql -c "DROP ROLE IF EXISTS ${USERNAME};"  | tee -a "${LOG_FILE}" || true
+        timeout 10s sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
+        timeout 10s sudo -u postgres psql -c "DROP ROLE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
     else
-        sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};"  | tee -a "${LOG_FILE}" || true
-        sudo -u postgres psql -c "DROP ROLE IF EXISTS ${USERNAME};"  | tee -a "${LOG_FILE}" || true
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
+        sudo -u postgres psql -c "DROP ROLE IF EXISTS ${USERNAME};" 2>&1 | tee -a "${LOG_FILE}" || true
     fi
 
     # Stop and disable services
-    systemctl stop postgresql.service  | tee -a "${LOG_FILE}" || true
-    systemctl disable postgresql.service  | tee -a "${LOG_FILE}" || true
+    systemctl stop postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
+    systemctl disable postgresql.service 2>&1 | tee -a "${LOG_FILE}" || true
 
     # Remove packages non-interactively
     log_info "Removing postgresql packages (non-interactive)..."
     export DEBIAN_FRONTEND=noninteractive
-    apt-get -y -q purge postgresql\* postgresql-client\* postgresql-contrib\*  | tee -a "${LOG_FILE}" || true
-    apt-get -y -q autoremove  | tee -a "${LOG_FILE}" || true
-    apt-get -y -q clean  | tee -a "${LOG_FILE}" || true
+    apt-get -y -q purge postgresql\* postgresql-client\* postgresql-contrib\* 2>&1 | tee -a "${LOG_FILE}" || true
+    apt-get -y -q autoremove 2>&1 | tee -a "${LOG_FILE}" || true
+    apt-get -y -q clean 2>&1 | tee -a "${LOG_FILE}" || true
 
     # Remove leftover data dirs (only if you really want to)
     if [[ -d /var/lib/postgresql ]]; then
@@ -602,8 +602,8 @@ stop_and_remove_systemd_service() {
     
     log_info "Removing systemd service: ${service_name}"
     
-    systemctl stop "${service_name}.service"  || true
-    systemctl disable "${service_name}.service"  || true
+    systemctl stop "${service_name}.service" 2>/dev/null || true
+    systemctl disable "${service_name}.service" 2>/dev/null || true
     
     if [[ -f "${service_file}" ]]; then
         rm -f "${service_file}"
@@ -618,7 +618,7 @@ stop_and_remove_supervisor_program() {
     
     log_info "Removing supervisor program: ${service_name}"
     
-    supervisorctl stop "${service_name}"  || true
+    supervisorctl stop "${service_name}" 2>/dev/null || true
     
     if [[ -f "${config_file}" ]]; then
         rm -f "${config_file}"
@@ -719,7 +719,7 @@ EOF
     rm -f /etc/nginx/sites-enabled/default
     rm -f /etc/nginx/sites-available/default
     
-    if nginx -t  | tee -a "${LOG_FILE}"; then
+    if nginx -t 2>&1 | tee -a "${LOG_FILE}"; then
         log_command "systemctl restart nginx"
         log_success "Nginx configured successfully"
     else
@@ -802,9 +802,9 @@ run_django_migrations() {
     if ! sudo -u "${USERNAME}" bash -c "
         source ${BASE_DIR}/venv/bin/activate
         cd ${BASE_DIR}
-        python3 manage.py makemigrations 
-        python3 manage.py migrate 
-        python3 manage.py collectstatic --noinput 
+        python3 manage.py makemigrations 2>&1
+        python3 manage.py migrate 2>&1
+        python3 manage.py collectstatic --noinput 2>&1
         deactivate
     " | tee -a "${LOG_FILE}"; then
         log_error "Django migrations failed"
@@ -865,7 +865,7 @@ update_frontend() {
         return 1
     fi
     
-    find "${WEB_DIR}" -mindepth 1 -delete  | tee -a "${LOG_FILE}"
+    find "${WEB_DIR}" -mindepth 1 -delete 2>&1 | tee -a "${LOG_FILE}"
 
     # Extrair novos arquivos
     log_info "Extracting new files..."
@@ -896,11 +896,11 @@ update_frontend() {
         log_warning "Failed to change ownership, but continuing..."
     fi
     
-    chmod -R 755 "${WEB_DIR}"  | tee -a "${LOG_FILE}"
+    chmod -R 755 "${WEB_DIR}" 2>&1 | tee -a "${LOG_FILE}"
 
     # Testar configuração do Nginx antes de reiniciar
     log_info "Testing Nginx configuration..."
-    if ! nginx -t  | tee -a "${LOG_FILE}"; then
+    if ! nginx -t 2>&1 | tee -a "${LOG_FILE}"; then
         log_error "Nginx configuration test failed"
         show_message "Warning" "Nginx config error detected. Check logs."
     fi
@@ -950,17 +950,17 @@ update_backend() {
     cp "${BASE_DIR}/.env" "${backup_dir}/.env"
     
     if [[ -d "${BASE_DIR}/backend" ]]; then
-        cp -r "${BASE_DIR}/backend" "${backup_dir}/"  || true
+        cp -r "${BASE_DIR}/backend" "${backup_dir}/" 2>/dev/null || true
     fi
     
     if [[ -f "${BASE_DIR}/manage.py" ]]; then
-        cp "${BASE_DIR}/manage.py" "${backup_dir}/"  || true
+        cp "${BASE_DIR}/manage.py" "${backup_dir}/" 2>/dev/null || true
     fi
 
     # Parar serviços
     log_info "Stopping application services..."
-    systemctl stop dac-api  | tee -a "${LOG_FILE}" || true
-    supervisorctl stop all  | tee -a "${LOG_FILE}" || true
+    systemctl stop dac-api 2>&1 | tee -a "${LOG_FILE}" || true
+    supervisorctl stop all 2>&1 | tee -a "${LOG_FILE}" || true
     
     # Aguardar processos finalizarem
     sleep 3
@@ -1004,7 +1004,7 @@ update_backend() {
         -not -name 'venv' \
         -not -name 'logs' \
         -not -name '.env' \
-        -exec rm -rf {} +  | tee -a "${LOG_FILE}"
+        -exec rm -rf {} + 2>&1 | tee -a "${LOG_FILE}"
 
     # Extrair novos arquivos
     log_info "Extracting new backend files..."
@@ -1044,7 +1044,7 @@ update_backend() {
         pip install --upgrade pip --quiet
         pip install -r ${BASE_DIR}/requirements.txt --quiet
         deactivate
-    "  | tee -a "${LOG_FILE}"; then
+    " 2>&1 | tee -a "${LOG_FILE}"; then
         log_error "Failed to update dependencies"
         show_message "Warning" "Dependencies update failed. Check logs."
     fi
@@ -1054,19 +1054,19 @@ update_backend() {
     if ! sudo -u "${USERNAME}" bash -c "
         source ${BASE_DIR}/venv/bin/activate
         cd ${BASE_DIR}
-        python3 manage.py migrate --noinput 
-        python3 manage.py collectstatic --noinput 
+        python3 manage.py migrate --noinput 2>&1
+        python3 manage.py collectstatic --noinput 2>&1
         deactivate
-    "  | tee -a "${LOG_FILE}"; then
+    " 2>&1 | tee -a "${LOG_FILE}"; then
         log_error "Migrations or collectstatic failed"
         show_message "Warning" "Database update failed. Check logs."
     fi
 
     # Reiniciar serviços
     log_info "Starting services..."
-    systemctl start dac-api  | tee -a "${LOG_FILE}"
+    systemctl start dac-api 2>&1 | tee -a "${LOG_FILE}"
     sleep 2
-    supervisorctl start all  | tee -a "${LOG_FILE}"
+    supervisorctl start all 2>&1 | tee -a "${LOG_FILE}"
     
     # Aguardar socket do gunicorn
     local wait_count=0
@@ -1210,8 +1210,8 @@ install_zdac() {
     create_all_services
     start_services
     
-    chown "${USERNAME}:www-data" "${BASE_DIR}/gunicorn.sock"  || true
-    chmod 770 "${BASE_DIR}/gunicorn.sock"  || true
+    chown "${USERNAME}:www-data" "${BASE_DIR}/gunicorn.sock" 2>/dev/null || true
+    chmod 770 "${BASE_DIR}/gunicorn.sock" 2>/dev/null || true
     
     if ! configure_nginx; then
         log_error "Failed to configure Nginx"
@@ -1228,9 +1228,9 @@ install_zdac() {
 cleanup_temp_files() {
     log_info "Cleaning temporary files..."
     
-    rm -f /tmp/dac.zip  || true
-    rm -f /tmp/web.zip  || true
-    rm -f /tmp/zdac-*  || true
+    rm -f /tmp/dac.zip 2>/dev/null || true
+    rm -f /tmp/web.zip 2>/dev/null || true
+    rm -f /tmp/zdac-* 2>/dev/null || true
     
     log_success "Temporary files cleaned"
 }
@@ -1268,7 +1268,7 @@ uninstall_zdac() {
     
     if [[ -d "${BASE_DIR}" ]]; then
         # Remove everything except logs
-        find "${BASE_DIR}" -mindepth 1 -maxdepth 1 ! -name 'logs' -exec rm -rf {} +  || true
+        find "${BASE_DIR}" -mindepth 1 -maxdepth 1 ! -name 'logs' -exec rm -rf {} + 2>/dev/null || true
         log_success "Base directory cleaned (logs preserved)"
     fi
     
@@ -1321,7 +1321,7 @@ main_menu() {
     )
 
     local choice
-    choice=$("${cmd[@]}" "${options[@]}"  >/dev/tty)
+    choice=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)
     clear
 
     case $choice in
