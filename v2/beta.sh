@@ -13,7 +13,7 @@ readonly ADMIN_PASSWORD="WmRhYzNAWmFiZQ=="
 readonly LANGUAGE_CODE="pt-BR"
 readonly TIME_ZONE="America/Sao_Paulo"
 readonly SECRET_KEY="django-insecure-vpo7np+n_333j@2dy6$&8tibp*sll(x$*6_7a!3!uc^cibb*"
-readonly SERVER_URL="https://raw.githubusercontent.com/zabedev/script/main/v2"
+readonly SERVER_URL="https://raw.githubusercontent.com/zabedev/script/main/v3"
 
 readonly BASE_DIR="/opt/dac"
 readonly WEB_DIR="/var/www/html"
@@ -78,7 +78,7 @@ log_command() {
     local cmd="$*"
     log_info "Executing: ${cmd}"
     
-    if eval "$cmd" | sudo tee -a "${LOG_FILE}" >/dev/null; then
+    if eval "$cmd" 2>&1 | sudo tee -a "${LOG_FILE}" >/dev/null; then
         log_success "Command succeeded: ${cmd}"
         return 0
     else
